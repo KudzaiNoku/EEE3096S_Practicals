@@ -1,0 +1,24 @@
+# STM32CubeIDE / STM32CubeMX junk
+*.launch
+*.log
+*.tmp
+*.bak
+*.swp
+*.user
+*.project
+*.cproject
+*.mxproject
+*.launches
+.settings/
+.ioc-backup
+*.loadpath
+
+# Build outputs
+/Debug/
+/Release/
+/build/
+/out/
+
+# OS clutter
+.DS_Store
+Thumbs.db
