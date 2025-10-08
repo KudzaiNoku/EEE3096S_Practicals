@@ -52,6 +52,28 @@ DMA_HandleTypeDef hdma_tim2_ch1;
 // TODO: Add code for global variables, including LUTs
 // more efficient for 12-bit data
 // variables generated using python
+// Wave selection state
+typedef enum { W_SINE = 0, W_SAW, W_TRI, W_PIANO, W_GUITAR, W_DRUM, W__N } wave_t;
+volatile wave_t g_wave = W_SINE;    // start on Sine
+
+// Map enum -> LUT pointer
+static inline uint32_t* wave_ptr(wave_t w){
+  switch (w){
+    case W_SINE:   return (uint32_t*)Sine_LUT;
+    case W_SAW:    return (uint32_t*)Saw_LUT;
+    case W_TRI:    return (uint32_t*)Triangle_LUT;
+    case W_PIANO:  return (uint32_t*)Piano_LUT;
+    case W_GUITAR: return (uint32_t*)Guitar_LUT;
+    case W_DRUM:   return (uint32_t*)Drum_LUT;
+    default:       return (uint32_t*)Sine_LUT;
+  }
+}
+
+// Map enum -> label for LCD
+static inline const char* wave_name(wave_t w){
+  static const char* N[] = {"Sine","Sawtooth","Triangular","Piano","Guitar","Drum"};
+  return N[(int)w];
+}
 uint32_t Sine_LUT[NS] = {
   2048, 2148, 2248, 2348, 2447, 2545, 2642, 2737, 2831, 2923, 3013, 3100, 3185, 3267, 3346, 3423, 3495, 3565, 3630, 3692, 3750, 3804, 3853, 3898, 3939, 3975, 4007, 4034, 4056, 4073, 4085, 4093, 4095, 4093, 4085, 4073, 4056, 4034, 4007, 3975, 3939, 3898, 3853, 3804, 3750, 3692, 3630, 3565, 3495, 3423, 3346, 3267, 3185, 3100, 3013, 2923, 2831, 2737, 2642, 2545, 2447, 2348, 2248, 2148, 2048, 1947, 1847, 1747, 1648, 1550, 1453, 1358, 1264, 1172, 1082, 995, 910, 828, 749, 672, 600, 530, 465, 403, 345, 291, 242, 197, 156, 120, 88, 61, 39, 22, 10, 2, 0, 2, 10, 22, 39, 61, 88, 120, 156, 197, 242, 291, 345, 403, 465, 530, 600, 672, 749, 828, 910, 995, 1082, 1172, 1264, 1358, 1453, 1550, 1648, 1747, 1847, 1947
 };
@@ -123,13 +145,23 @@ int main(void)
   MX_DMA_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
+  init_lcd();
 
   /* USER CODE BEGIN 2 */
   // TODO: Start TIM3 in PWM mode on channel 3
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
   // TODO: Start TIM2 in Output Compare (OC) mode on channel 1
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, TIM2_Ticks - 1);  // prime CCR1
+  HAL_TIM_OC_Start(&htim2, TIM_CHANNEL_1);
   // TODO: Start DMA in IT mode on TIM2->CH1. Source is LUT and Dest is TIM3->CCR3; start with Sine LUT
+  uint32_t *src = (uint32_t*)Sine_LUT;   // use your existing Sine LUT
+  HAL_DMA_Start_IT(&hdma_tim2_ch1, (uint32_t)src, DestAddress, NS);
   // TODO: Write current waveform to LCD(Sine is the first waveform)
+  lcd_command(CLEAR);
+  HAL_DELAY(30);
+  lcd_putstring("Sine");
   // TODO: Enable DMA (start transfer from LUT to CCR)
+  __HAL_TIM_ENABLE_DMA(&htim2, TIM_DMA_CC1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -203,7 +235,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 4294967295;
+  htim2.Init.Period = TIM2_Ticks - 1; // was 4294967295
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -230,7 +262,7 @@ static void MX_TIM2_Init(void)
   }
 
   sConfigOC.OCMode = TIM_OCMODE_TIMING;
-  sConfigOC.Pulse = 0;
+  sConfigOC.Pulse = TIM2_Ticks - 1; // was 0
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
@@ -284,6 +316,7 @@ static void MX_TIM3_Init(void)
   htim3.Init.Prescaler = 0;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim3.Init.Period = 4095;
+
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
@@ -373,8 +406,30 @@ static void MX_GPIO_Init(void)
 void EXTI0_IRQHandler(void){
   // TODO: Debounce using HAL_GetTick()
   // TODO: Disable DMA transfer and abort IT, then start DMA in IT mode with new LUT and re-enable transfer
+
   // HINT: Consider using C's "switch" function to handle LUT changes
-  HAL_GPIO_EXTI_IRQHandler(Button0_Pin); // Clear interrupt flags
+	  HAL_GPIO_EXTI_IRQHandler(Button0_Pin);   // clear EXTI flag
+
+	  static uint32_t last = 0;
+	  uint32_t now = HAL_GetTick();
+	  if (now - last < 150) return;
+	  last = now;
+
+	  g_wave = (g_wave + 1) % W__N;
+
+	  __HAL_TIM_DISABLE_DMA(&htim2, TIM_DMA_CC1);
+	  HAL_DMA_Abort_IT(&hdma_tim2_ch1);
+
+	  uint32_t *src = wave_ptr(g_wave);
+	  HAL_DMA_Start_IT(&hdma_tim2_ch1, (uint32_t)src, DestAddress, NS);
+	  __HAL_TIM_ENABLE_DMA(&htim2, TIM_DMA_CC1);
+
+	  lcd_command(CLEAR);
+	  lcd_putstring(wave_name(g_wave));
+}
+void DMA1_Stream5_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(&hdma_tim2_ch1);
 }
 /* USER CODE END 4 */
 
