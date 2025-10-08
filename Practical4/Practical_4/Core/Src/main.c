@@ -55,6 +55,7 @@ DMA_HandleTypeDef hdma_tim2_ch1;
 // Wave selection state
 typedef enum { W_SINE = 0, W_SAW, W_TRI, W_PIANO, W_GUITAR, W_DRUM, W__N } wave_t;
 volatile wave_t g_wave = W_SINE;    // start on Sine
+volatile uint32_t press_count = 0; // in PV
 
 // Map enum -> LUT pointer
 static inline uint16_t* wave_ptr(wave_t w){
@@ -414,32 +415,33 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 void EXTI0_IRQHandler(void){
-  // TODO: Debounce using HAL_GetTick()
-  // TODO: Disable DMA transfer and abort IT, then start DMA in IT mode with new LUT and re-enable transfer
+	press_count++;   // proves ISR is running
+	HAL_GPIO_EXTI_IRQHandler(Button0_Pin);   // clear EXTI flag first
 
-  // HINT: Consider using C's "switch" function to handle LUT changes
-
-	  HAL_GPIO_EXTI_IRQHandler(Button0_Pin);   // clear EXTI flag
 	  static volatile uint8_t swapping = 0;
 	  if (swapping) return;
 	  swapping = 1;
+
 	  static uint32_t last = 0;
 	  uint32_t now = HAL_GetTick();
-	  if (now - last < 150) return;
+	  if (now - last < 150) { swapping = 0; return; }  // debounce early-exit
 	  last = now;
 
+	  // advance waveform
 	  g_wave = (g_wave + 1) % W__N;
 
+	  // stop → swap → restart DMA
 	  __HAL_TIM_DISABLE_DMA(&htim2, TIM_DMA_CC1);
 	  HAL_DMA_Abort_IT(&hdma_tim2_ch1);
 
-	  //uint16_t *src = Sine_LUT;  // (no cast needed)
 	  uint16_t *src = wave_ptr(g_wave);
 	  HAL_DMA_Start_IT(&hdma_tim2_ch1, (uint32_t)src, DestAddress, NS);
 	  __HAL_TIM_ENABLE_DMA(&htim2, TIM_DMA_CC1);
 
+	  // update LCD
 	  lcd_command(CLEAR);
 	  lcd_putstring((char*)wave_name(g_wave));
+
 	  swapping = 0;
 }
 
